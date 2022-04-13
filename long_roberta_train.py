@@ -342,7 +342,10 @@ def main():
     # roberta_tokenizer = AutoTokenizer.from_pretrained(args.encoder_model_name)
     gpt2_tokenizer = decoder_tokenizer(args, DECODER_SPECIAL_TOKENS)
     model, roberta_tokenizer = get_long_roberta_model(args)
-
+    
+    start_epoch = 1
+    last_epoch = 0
+    best_result = 9999.0
     print("Best result before training: ", best_result)
     if args.last_logging != "None": 
         print(200*"-")
