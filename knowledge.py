@@ -10,8 +10,8 @@ nltk.download('stopwords')
 from nltk.corpus import stopwords
 
 nlp = spacy.load("en_core_web_sm")
-
-with open("./bart_file/stopwords.txt") as f: 
+nlp2 = spacy.load("en_core_sci_lg")
+with open("./files/stopwords.txt") as f: 
     stopword_kaggle = f.read().split("\n")
 stopwords_nltk = stopwords.words('english')
 new_stop_words = ['many', 'us', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
@@ -208,7 +208,7 @@ def tagger(text):
 #######################################################################################################
 #KNOWLEDGE
 class KnowledgeGraph(object):
-    def __init__(self, txt_path, encoder_tokenizer, decoder_tokenizer, keyBERT,predicate=True, is_for = "encoder"):
+    def __init__(self, txt_path, encoder_tokenizer, decoder_tokenizer,predicate=True, is_for = "encoder"):
         self.predicate = predicate
         self.txt_file_path = txt_path
         self.encoder_tokenizer = encoder_tokenizer
@@ -217,7 +217,6 @@ class KnowledgeGraph(object):
         self.special_tags = set(NEVER_SPLIT_TAG)
         self.end_punct = set([".", "?", "!"])
         self.is_for = is_for
-        self.keyBERT = keyBERT
 
     
     def _create_lookup_table(self):
@@ -247,16 +246,9 @@ class KnowledgeGraph(object):
         filtered_tokens = [w for w in tokens if not w.lower() in all_stop_words]
         return filtered_tokens
     
-    def extract_terms(self, document, n_gram_range = (3,3), top_N = 5, diversity_threshold = 0.7): 
-        keywords = self.keyBERT.extract_keywords(
-            document, stop_words = 'english', 
-            keyphrase_ngram_range = n_gram_range, 
-            use_mmr = True, 
-            diversity = diversity_threshold, 
-            top_n = top_N
-        )
-        result = [kw for kw, score in keywords]
-        return result
+    def extract_terms(self, document): 
+        doc_term = nlp2(document)
+        return list(doc_term.ents)
     
     def add_knowledge_with_vm(self, sent_batch, max_entities = 2, add_pad = True, max_length = 256): 
         r"""
@@ -449,7 +441,7 @@ class KnowledgeGraph(object):
                     entities = list(self.lookup_table.get(token.strip(), []))[:max_entities]
                     if entities: 
                         merged_entities = [", ".join(entities)]
-                        kw_entities = self.extract_keyword(merged_entities[0])
+                        kw_entities = self.extract_terms(merged_entities[0])
                         entities = kw_entities
                 else: 
                     entities = []
@@ -539,5 +531,3 @@ class KnowledgeGraph(object):
             visible_matrix_batch.append(visible_matrix)
 
         return know_sent_batch, position_batch, visible_matrix_batch      
-
-    
