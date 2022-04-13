@@ -4,8 +4,8 @@ import math
 import copy
 import torch
 from dataclasses import dataclass, field
-from modeling_roberta import RobertaModel
-from modeling_longformer import LongformerSelfAttention
+from model.modeling_roberta import RobertaModel
+from model.modeling_longformer import LongformerSelfAttention
 from transformers import RobertaTokenizerFast
 from transformers import TrainingArguments, HfArgumentParser
 
