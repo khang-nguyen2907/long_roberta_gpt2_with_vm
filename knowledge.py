@@ -10,8 +10,8 @@ nltk.download('stopwords')
 from nltk.corpus import stopwords
 
 nlp = spacy.load("en_core_web_sm")
-
-with open("./bart_file/stopwords.txt") as f: 
+nlp2 = spacy.load("en_core_sci_lg")
+with open("./files/stopwords.txt") as f: 
     stopword_kaggle = f.read().split("\n")
 stopwords_nltk = stopwords.words('english')
 new_stop_words = ['many', 'us', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
@@ -208,7 +208,7 @@ def tagger(text):
 #######################################################################################################
 #KNOWLEDGE
 class KnowledgeGraph(object):
-    def __init__(self, txt_path, encoder_tokenizer, decoder_tokenizer, keyBERT,predicate=True, is_for = "encoder"):
+    def __init__(self, txt_path, encoder_tokenizer, decoder_tokenizer,predicate=True, is_for = "encoder"):
         self.predicate = predicate
         self.txt_file_path = txt_path
         self.encoder_tokenizer = encoder_tokenizer
@@ -217,7 +217,28 @@ class KnowledgeGraph(object):
         self.special_tags = set(NEVER_SPLIT_TAG)
         self.end_punct = set([".", "?", "!"])
         self.is_for = is_for
-        self.keyBERT = keyBERT
+
+    def get_question_with_kg_kw(self, sent_batch, max_entities):
+        inputs = [] #[['a', 'b'], ['c', 'd']]
+        for s in sent_batch:
+            sent = self.extract_keyword(s) #['Hello', '!', 'My name', 'is', 'Khang', '.'], ...
+            inputs.append(sent)
+        know_sent_batch = [] #[['a, e1, e2, e3', 'b, e4, e5, e6'], ['c, e7, e8, e9', 'd, e10, e11, e12']]
+        for split_sent in inputs: #['a', 'b'], ['c', 'd']
+            a_sentence = [] #['a', 'e1', 'e2', 'e3']
+            for token in split_sent: #token = 'abcd', ... 
+                entities = list(self.lookup_table.get(token.strip(), []))[:max_entities]
+                merged_entities = [", ".join(entities)]
+                kw_entities = self.extract_terms(merged_entities[0])
+                entities = kw_entities #['e1', 'e2', 'e3', ...]
+                a_e = ", ".join([token] + entities)
+                if len(a_sentence) == 0:
+                    a_sentence.append(a_e) #['a, e1, e2, e3']
+                else:
+                    a_sentence += [a_e] #['a, e1, e2, e3', 'b, e4, e5, e6']
+            know_sent_batch.append(", ".join(a_sentence))
+        return know_sent_batch
+                
 
     
     def _create_lookup_table(self):
@@ -247,16 +268,15 @@ class KnowledgeGraph(object):
         filtered_tokens = [w for w in tokens if not w.lower() in all_stop_words]
         return filtered_tokens
     
-    def extract_terms(self, document, n_gram_range = (3,3), top_N = 5, diversity_threshold = 0.7): 
-        keywords = self.keyBERT.extract_keywords(
-            document, stop_words = 'english', 
-            keyphrase_ngram_range = n_gram_range, 
-            use_mmr = True, 
-            diversity = diversity_threshold, 
-            top_n = top_N
-        )
-        result = [kw for kw, score in keywords]
-        return result
+    def extract_terms(self, document): 
+        if isinstance(document, str): 
+            doc_term = nlp2(document)
+            return list(map(str,list(doc_term.ents))) #return a list 
+        else: 
+            sents = []
+            for d in document: 
+                sents.append(", ".join(list(map(str,list(doc_term.ents))))) #return a list of sentences_kw
+            return sents
     
     def add_knowledge_with_vm(self, sent_batch, max_entities = 2, add_pad = True, max_length = 256): 
         r"""
@@ -449,7 +469,7 @@ class KnowledgeGraph(object):
                     entities = list(self.lookup_table.get(token.strip(), []))[:max_entities]
                     if entities: 
                         merged_entities = [", ".join(entities)]
-                        kw_entities = self.extract_keyword(merged_entities[0])
+                        kw_entities = self.extract_terms(merged_entities[0])
                         entities = kw_entities
                 else: 
                     entities = []
@@ -538,6 +558,181 @@ class KnowledgeGraph(object):
             position_batch.append(pos)
             visible_matrix_batch.append(visible_matrix)
 
-        return know_sent_batch, position_batch, visible_matrix_batch      
+        return know_sent_batch, position_batch, visible_matrix_batch    
+
+    def tokenizer_with_vm(self, sent_batch, max_entities = 2, add_pad = True, max_length = 256): 
+        r"""
+        This function for model with the input: 
+
+        input encoder: <s>question keywords with KG queried information 
+
+        input decoder: <s>question keywords with KG queried information <\s> answer <\s>
+
+        ```tagger``` is replaced by a keyword extraction function 
+
+        Because the answer is just used as a label, therefore it is not processed to have KG information extraction, just question 
+        keywords are allowed to be queried. So that, from the SEP_TOKEN, ```do_query``` flag will be set to False, and there is no 
+        any token is queried from KG since that. 
+
+
+        args: 
+            sent_batch (List) -- list of input sentence, e.g., ["abcd", "efgh]. Going through each element in `sent_batch`
+                                  to process them: add special token, group tagging, ... 
+            max_entities (int) -- In case a token (noun or noun phrase) has a lot of information (entities) in Knowledge Graph (KG). 
+                                  ```max_entities``` will restrict the number of entities are injected in that token in the input sentence
+            add_pad (bool) -- 
+            max_length (int) -- A fixed length. If a sentence is not reach ```max_length```, it will be paded, if it exceeds ```max_length```
+                                it will be truncated
+        
+        Return: 
+            know_sent_batch (List) -- a list contains a list of token that are tokenized of each element in `sent_batch`. On the other hands, a list contains a list of tokens 
+                                      from tokenized sentence tree 
+            position_batch (List) -- a list contains a list of position index, it is ```soft_position``` in the original paper (K-BERT) paper. 
+                                     Because there are many information (entities) are added to the input sentence. Therefore, we can not create 
+                                     ```position_ids``` as usual from origional input. We need to use ```position_batch``` as ```position_ids``` 
+                                     in the embeddings part. 
+            visible_matrix_batch (List) -- It acts as an ```attention_mask```. It decides which token is related to the others 
+        """
+        
+        #input sentence: "Yesterday, I got eye redness. Today, my eyes turns badly. Do I get retinits?"
+        inputs = [] #[['<s>', 'Hello', '!', ' My name', ' is', ' Khang', '.'], ['<s>', 'Hi', '!', ' How', ' are', ' you', '?']]
+        for s in sent_batch:
+            sent = self.extract_keyword(s) #['Hello', '!', 'My name', 'is', 'Khang', '.'], ...
+            sent_ = [' '+w if w not in self.end_punct else w for w in sent[1:]] #['Hello', '!', ' My name', ' is', ' Khang', '.'], ...
+            inputs.append([CLS_TOKEN] + sent_) # [['<s>', 'Hello', '!', 'My name', 'is', 'Khang', '.']]
+        
+        
+        know_sent_batch = []
+        position_batch = []
+        visible_matrix_batch = []
+        
+        for split_sent in inputs: 
+            #create tree 
+            do_query = True
+            sent_tree = []
+            pos_idx_tree = []
+            abs_idx_tree = []
+            pos_idx = -1 
+            abs_idx = -1
+            abs_idx_src = []
+
+            for token in split_sent: #token = '<s>', 'abcd', ... 
+                if token.strip() == SEP_TOKEN: 
+                    do_query = False
+
+                if do_query: 
+                    entities = list(self.lookup_table.get(token.strip(), []))[:max_entities]
+                    if entities: 
+                        merged_entities = [", ".join(entities)]
+                        kw_entities = self.extract_terms(merged_entities[0])
+                        entities = kw_entities
+                else: 
+                    entities = []
+                
+                if self.is_for == "encoder": 
+                    pr_token = self.encoder_tokenizer.tokenize(str(token)) 
+                    pr_entities = [self.encoder_tokenizer.tokenize(str(e)) for e in entities]
+                else:
+                    pr_token = self.decoder_tokenizer.tokenize(str(token)) 
+                    pr_entities = [self.decoder_tokenizer.tokenize(str(e)) for e in entities]
+                sent_tree.append((pr_token, pr_entities)) # [('<s>', [])]
+
+                if token.strip() in self.special_tags: 
+                    token_pos_idx = [pos_idx + 1]
+                    token_abs_idx = [abs_idx + 1]
+                else: 
+                    token_pos_idx = [pos_idx + i for i in range(1, len(pr_token) + 1)]
+                    token_abs_idx = [abs_idx + i for i in range(1, len(pr_token) + 1)]
+                abs_idx = token_abs_idx[-1]
+
+                entities_pos_idx = []
+                entities_abs_idx = []
+                for ent in entities: #ent = 'c c', 'd d'
+                    ent = str(ent)
+                    if self.is_for == "encoder":
+                        pr_ent = self.encoder_tokenizer.tokenize(ent)
+                    else: 
+                        pr_ent = self.decoder_tokenizer.tokenize(ent)
+                    ent_pos_idx = [token_pos_idx[-1] + i for i in range(1, len(pr_ent) + 1)]
+                    entities_pos_idx.append(ent_pos_idx)
+                    ent_abs_idx = [abs_idx + i for i in range(1, len(pr_ent) + 1)]
+                    abs_idx = ent_abs_idx[-1]
+                    entities_abs_idx.append(ent_abs_idx)
+                
+                pos_idx_tree.append((token_pos_idx, entities_pos_idx))
+                pos_idx = token_pos_idx[-1]
+                abs_idx_tree.append((token_abs_idx, entities_abs_idx))
+                abs_idx_src += token_abs_idx
+            
+            #Get know_sent, pos 
+            know_sent = []
+            pos = []
+            for i in range(len(sent_tree)): 
+                word = sent_tree[i][0] # list 
+                if len(word) == 1 and word[-1] in self.special_tags: 
+                    know_sent += word
+                else: 
+                    know_sent += word 
+                pos += pos_idx_tree[i][0]
+                for j in range(len(sent_tree[i][1])): 
+                    add_word = sent_tree[i][1][j]
+                    know_sent += add_word 
+                    pos += list(pos_idx_tree[i][1][j])
+
+            token_num = len(know_sent)
+
+            #calculate visible matrix 
+            visible_matrix = np.zeros((token_num, token_num))
+            for item in abs_idx_tree:
+                src_ids = item[0]
+                for id in src_ids:
+                    visible_abs_idx = abs_idx_src + [idx for ent in item[1] for idx in ent]
+                    visible_matrix[id, visible_abs_idx] = 1
+                for ent in item[1]:
+                    for id in ent:
+                        visible_abs_idx = ent + src_ids
+                        visible_matrix[id, visible_abs_idx] = 1
+            
+            #after processing a text which is now a list of chunks in original text in `inputs`
+            #appending them to 3 lists
+            know_sent_batch.append(know_sent)
+            position_batch.append(pos)
+            visible_matrix_batch.append(visible_matrix)
+
+        #make sure that 3 lists have the same length corresponding to length of text in `sent_batch`
+        #because each text needs to have its own `know_sent`, `pos`, `visible_matrix`
+        assert len(know_sent_batch) == len(position_batch) == len(visible_matrix_batch), f"len(know_sent_batch): {len(know_sent_batch)}, len(position_batch): {len(position_batch)}, len(visible_matrix_batch): {len(visible_matrix_batch)} do not equal"
+        
+        #go find the longest length in `know_sent_batch` because it is not good to pad every sentence 
+        #to 4096, there may be some sentences with a few of token, padding it to 4096 leads to lack of memory for training
+        max_length_ = max([len(x) for x in know_sent_batch])
+
+        #make sure that `max_length_` to pad a sentence is multiple of 512
+        max_length_ = ((max_length_ // 512) + 1) * 512
+
+        #`max_length` is originally set as 4096, it will be the lognest - `max_length_` if it is greater than `max_length_`
+        if max_length_ < max_length: 
+            max_length = max_length_
+        
+        #padding
+        for idx, (know_sent, pos, visible_matrix) in enumerate(zip(know_sent_batch, position_batch, visible_matrix_batch)):
+            src_length = len(know_sent)
+            if len(know_sent) < max_length:
+                pad_num = max_length - src_length
+                know_sent += [PAD_TOKEN] * pad_num
+                pos += [max_length - 1] * pad_num
+                visible_matrix = np.pad(visible_matrix, ((0, pad_num), (0, pad_num)), 'constant')  # pad 0
+            else:
+                know_sent = know_sent[:max_length]
+                pos = pos[:max_length]
+                visible_matrix = visible_matrix[:max_length, :max_length]
+            
+            know_sent_batch[idx] = know_sent
+            position_batch[idx] = pos
+            visible_matrix_batch[idx] = visible_matrix
+            
+            
+
+        return know_sent_batch, position_batch, visible_matrix_batch  
 
     

@@ -30,7 +30,7 @@ from transformers.modeling_utils import (
     find_pruneable_heads_and_indices,
     prune_linear_layer,
 )
-from transformers.file_utils import (
+from transformers.utils import (
     ModelOutput,
     add_code_sample_docstrings,
     add_start_docstrings,
@@ -545,8 +545,8 @@ class LongformerSelfAttention(nn.Module):
     def forward(
         self,
         hidden_states,
-        visible_matrix = None,
         attention_mask=None,
+        visible_matrix = None,
         layer_head_mask=None,
         is_index_masked=None,
         is_index_global_attn=None,
@@ -587,18 +587,20 @@ class LongformerSelfAttention(nn.Module):
 
         # values to pad for attention probs
         #[batch, 1, 1, seq_len]
-        attention_mask = attention_mask[:, 0, 0, :]
-        visible_matrix = visible_matrix[:, None, :, :]
-        visible_matrix = 1.0 - visible_matrix
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        visible_matrix = 1.0 - visible_matrix #batch, seq, seq
+        visible_matrix = torch.matmul(visible_matrix, torch.ones(batch_size, seq_len,1).to(device)).squeeze(-1)
+        # print("visible_matrix matmul: ", visible_matrix.size())
+        visible_matrix = (visible_matrix != 0)[:, :, None, None]
         remove_from_windowed_attention_mask = (attention_mask != 0)[:, :, None, None] 
-        print("remove_from_windowed_attention_mask: ", remove_from_windowed_attention_mask.size())
-        print("attention_mask: ", attention_mask.size())
-        print("visible_matrix: ", visible_matrix.size())
+        # print("remove_from_windowed_attention_mask: ", remove_from_windowed_attention_mask.size())
+        # print("attention_mask: ", attention_mask.size())
+        # print("visible_matrix: ", visible_matrix.size())
         # print("attention_mask: ", attention_mask)
         # print("visible_matrix: ", visible_matrix)
         remove_from_windowed_attention_mask1 = remove_from_windowed_attention_mask + visible_matrix
         remove_from_windowed_attention_mask1 = remove_from_windowed_attention_mask1 != 0
-        print("remove_from_windowed_attention_mask1: ", remove_from_windowed_attention_mask1.size())
+        # print("remove_from_windowed_attention_mask1: ", remove_from_windowed_attention_mask1.size())
         # print(remove_from_windowed_attention_mask1)
 
         # cast to fp32/fp16 then replace 1's with -inf
@@ -606,15 +608,24 @@ class LongformerSelfAttention(nn.Module):
             remove_from_windowed_attention_mask1, -10000.0
         )# not 0 will be filled by -10000
         # diagonal mask with zeros everywhere and -inf inplace of padding
-        diagonal_mask = self._sliding_chunks_query_key_matmul(
-            float_mask.new_ones(size=float_mask.size()), float_mask, self.one_sided_attn_window_size
+        # diagonal_mask = self._sliding_chunks_query_key_matmul(
+        #     float_mask.new_ones(size=float_mask.size()), float_mask, self.one_sided_attn_window_size
+        # )
+        
+        diagonal_mask = visible_matrix.type_as(query_vectors).masked_fill(
+            visible_matrix, -10000.0
         )
-        print("diagonal_mask: ", diagonal_mask.size())
-        print("attn_scores: ", attn_scores.size())
+        
+        diagonal_mask = self._sliding_chunks_query_key_matmul(
+            diagonal_mask.new_ones(size=diagonal_mask.size()), diagonal_mask, self.one_sided_attn_window_size
+        )
+        
+        # print("diagonal_mask: ", diagonal_mask.size())
+        # print("attn_scores: ", attn_scores.size())
 
         # pad local attention probs
-        diagonal_mask = diagonal_mask[:, None, :, :]
-        print("diagonal_mask later: ", diagonal_mask.size())
+        # diagonal_mask = diagonal_mask[:, None, :, :]
+        # print("diagonal_mask later: ", diagonal_mask.size())
         attn_scores += diagonal_mask
 
         assert list(attn_scores.size()) == [
@@ -837,12 +848,15 @@ class LongformerSelfAttention(nn.Module):
 
         query = self._chunk(query, window_overlap)
         key = self._chunk(key, window_overlap)
+        # print("_sliding: ", query.size())
 
         # matrix multiplication
         # bcxd: batch_size * num_heads x chunks x 2window_overlap x head_dim
         # bcyd: batch_size * num_heads x chunks x 2window_overlap x head_dim
         # bcxy: batch_size * num_heads x chunks x 2window_overlap x 2window_overlap
         diagonal_chunked_attention_scores = torch.einsum("bcxd,bcyd->bcxy", (query, key))  # multiply
+        # print(diagonal_chunked_attention_scores.size())
+        # print(diagonal_chunked_attention_scores)
 
         # convert diagonals into columns
         diagonal_chunked_attention_scores = self._pad_and_transpose_last_two_dims(
@@ -1158,6 +1172,7 @@ class LongformerAttention(nn.Module):
         self,
         hidden_states,
         attention_mask=None,
+        visible_matrix = None,
         layer_head_mask=None,
         is_index_masked=None,
         is_index_global_attn=None,
@@ -1167,6 +1182,7 @@ class LongformerAttention(nn.Module):
         self_outputs = self.self(
             hidden_states,
             attention_mask=attention_mask,
+            visible_matrix = visible_matrix,
             layer_head_mask=layer_head_mask,
             is_index_masked=is_index_masked,
             is_index_global_attn=is_index_global_attn,
@@ -1222,6 +1238,7 @@ class LongformerLayer(nn.Module):
         self,
         hidden_states,
         attention_mask=None,
+        visible_matrix = None,
         layer_head_mask=None,
         is_index_masked=None,
         is_index_global_attn=None,
@@ -1231,6 +1248,7 @@ class LongformerLayer(nn.Module):
         self_attn_outputs = self.attention(
             hidden_states,
             attention_mask=attention_mask,
+            visible_matrix = visible_matrix, 
             layer_head_mask=layer_head_mask,
             is_index_masked=is_index_masked,
             is_index_global_attn=is_index_global_attn,
@@ -1263,6 +1281,7 @@ class LongformerEncoder(nn.Module):
         self,
         hidden_states,
         attention_mask=None,
+        visible_matrix = None,
         head_mask=None,
         padding_len=0,
         output_attentions=False,
@@ -1299,6 +1318,7 @@ class LongformerEncoder(nn.Module):
                     create_custom_forward(layer_module),
                     hidden_states,
                     attention_mask,
+                    visible_matrix,
                     head_mask[idx] if head_mask is not None else None,
                     is_index_masked,
                     is_index_global_attn,
@@ -1307,6 +1327,7 @@ class LongformerEncoder(nn.Module):
                 layer_outputs = layer_module(
                     hidden_states,
                     attention_mask=attention_mask,
+                    visible_matrix = visible_matrix,
                     layer_head_mask=head_mask[idx] if head_mask is not None else None,
                     is_index_masked=is_index_masked,
                     is_index_global_attn=is_index_global_attn,
@@ -1629,6 +1650,7 @@ class LongformerModel(LongformerPreTrainedModel):
         self,
         input_ids: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        visible_matrix: Optional[torch.Tensor] = None,
         global_attention_mask: Optional[torch.Tensor] = None,
         head_mask: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
@@ -1725,6 +1747,7 @@ class LongformerModel(LongformerPreTrainedModel):
         encoder_outputs = self.encoder(
             embedding_output,
             attention_mask=extended_attention_mask,
+            visible_matrix = visible_matrix, 
             head_mask=head_mask,
             padding_len=padding_len,
             output_attentions=output_attentions,

@@ -1,4 +1,5 @@
 import argparse
+from cgitb import text
 import json
 import os
 from pyexpat import model
@@ -18,6 +19,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import datasets
+from datasets import Dataset
 from config import *
 from constant_bart import *
 from model_saver import *
@@ -263,6 +265,131 @@ class Medical_Datset(Dataset):
 
             return encoder_input_ids, encoder_visible_matrix, encoder_position_ids, encoder_seg_mask, decoder_input_ids, decoder_attention_mask, labels_ids
 
+class Medical_Dataset(Dataset): 
+    def __init__(self, dataset_path, knowledge,encoder_tokenizer, decoder_tokenizer,args, ij_kg = False): 
+        self.args = args
+        self.dataset_path = dataset_path
+        self.knowledge = knowledge
+        self.encoder_vocab_file = encoder_tokenizer.get_vocab()
+        self.decoder_vocab_file = decoder_tokenizer.get_vocab()
+        self.sentences = self.load_sentences()
+        self.columns = self.load_columns()
+        self.decoder_tokenizer = decoder_tokenizer
+        self.encoder_tokenizer = encoder_tokenizer
+        self.ij_kg = ij_kg
+    def load_sentences(self): 
+        sentences = []
+        with open(self.dataset_path, mode='r', encoding="utf-8") as f:
+            for line_id, line in enumerate(f):
+                if line_id == 0:
+                    continue
+                sentences.append(line)
+        return sentences
+    
+    def load_columns(self): 
+        columns = {}
+        with open(self.dataset_path, mode="r", encoding="utf-8") as f:
+            for line_id, line in enumerate(f):
+                try:
+                    line = line.strip().split("\t")
+                    if line_id == 0:
+                        for i, column_name in enumerate(line):
+                            columns[column_name] = i
+                        continue
+                except:
+                    pass
+        return columns
+
+    def split_answer_question(self): 
+        sentences = self.load_sentences(self.dataset_path)
+        columns = self.load_columns(self.dataset_path)
+        answers = []
+        questions = []
+        for line in sentences: 
+            line = line.strip().split('\t')
+            label = str(line[columns['answer']])
+            text = str(line[columns['question']])
+            answers.append(label)
+            questions.append(text)
+        assert len(answers) == len(questions), f"length of list of answers and questions must be equal, but got {len(answers)}, {len(questions)}"
+        return answers, questions
+    
+    def create_dataset_inject_kg(self):
+        r"""
+        input encoder: <s> question + KG
+        input decoder: <s> question_kw, KG_kw <\s> answer <s>
+        """ 
+
+        answers, questions = self.split_answer_question()
+        tokens, pos, vm = self.knowledge.tokenizer_with_vm(questions,max_entities = 8, max_length = 4096)
+        vms = [v.astype("bool") for v in vm]
+        token_ids = [[self.encoder_vocab_file.get(t) for t in token] for token in tokens]
+        mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
+
+        decoder_context = self.knowledge.get_question_with_kg_kw(questions, max_entities = 8)
+        decoder_args = decoder_tokenizer(decoder_context, answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
+        decoder_ids = decoder_args.input_ids
+        decoder_attn_mask = decoder_args.attention_mask
+
+        label_pr = decoder_tokenizer(answers, padding = "longest")
+        label_ids = label_pr.input_ids
+        label_attn_mask = label_pr.attention_mask
+
+        labels_ids = [
+            [-100 if mask == 0 else token for mask, token in mask_and_tokens] for mask_and_tokens in [zip(masks, labels) for masks, labels in zip(label_attn_mask, label_ids)]
+        ]
+
+        
+        return token_ids, mask, vms, decoder_ids, decoder_attn_mask, labels_ids, pos
+    
+    def create_dataset_no_inject(self): 
+        r"""
+        input encoder: <s> question + KG 
+        input decoder: <s> question <\s> answer <s>
+        """
+        answers, questions = self.split_answer_question()
+        tokens, pos, vm = self.knowledge.tokenizer_with_vm(questions,max_entities = 8, max_length = 4096)
+        vms = [v.astype("bool") for v in vm]
+        token_ids = [[self.encoder_vocab_file.get(t) for t in token] for token in tokens]
+        mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
+
+        question_kw = self.knowledge.extract_terms(questions)
+        decoder_args = decoder_tokenizer(question_kw, answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
+        decoder_ids = decoder_args.input_ids
+        decoder_attn_mask = decoder_args.attention_mask
+
+        label_pr = decoder_tokenizer(answers, padding = "longest")
+        label_ids = label_pr.input_ids
+        label_attn_mask = label_pr.attention_mask
+
+        labels_ids = [
+            [-100 if mask == 0 else token for mask, token in mask_and_tokens] for mask_and_tokens in [zip(masks, labels) for masks, labels in zip(label_attn_mask, label_ids)]
+        ]
+
+        
+        return token_ids, mask, vms, decoder_ids, decoder_attn_mask, labels_ids, pos
+
+
+    def __len__(self):
+        return len(self.sentences)
+    
+    def __getitem__(self, idx):
+        if self.ij_kg:
+            token_ids, mask, vms, decoder_ids, decoder_attn_mask, labels_ids, pos = self.create_dataset_inject_kg()
+        else: 
+            token_ids, mask, vms, decoder_ids, decoder_attn_mask, labels_ids, pos = self.create_dataset_no_inject()
+        dataset_dict = {
+            "input_ids": torch.Tensor(token_ids[idx]), 
+            "attention_mask": torch.Tensor(mask[idx]), 
+            "visible_matrix": torch.Tensor(vms[idx]), 
+            "decoder_input_ids": torch.Tensor(decoder_ids[idx]), 
+            "decoder_attention_mask": torch.Tensor(decoder_attn_mask[idx]), 
+            "labels": torch.Tensor(labels_ids[idx]), 
+            "position_ids": torch.Tensor(pos[idx]),
+        }
+        return dataset_dict
+
+
 def decoder_tokenizer(args, special_tokens = None): 
 
     def build_inputs_with_special_tokens(self, token_ids_0, token_ids_1=None):
@@ -342,6 +469,8 @@ def main():
     # roberta_tokenizer = AutoTokenizer.from_pretrained(args.encoder_model_name)
     gpt2_tokenizer = decoder_tokenizer(args, DECODER_SPECIAL_TOKENS)
     model, roberta_tokenizer = get_long_roberta_model(args)
+
+    knowledge = KnowledgeGraph(txt_path=args.kg_path, encoder_tokenizer=roberta_tokenizer, decoder_tokenizer=gpt2_tokenizer)
 
     print("Best result before training: ", best_result)
     if args.last_logging != "None": 
