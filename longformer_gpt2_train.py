@@ -51,7 +51,7 @@ def parsers():
     parser.add_argument("--test_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/datasets/medical_test.tsv",type=str,
                         help="Path of the testset.")
     parser.add_argument("--log_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/logs",type=str,
-                        help="Path of the testset.")
+                        help="Path of the logging folder that contains logging information.")
 
     # Model options.
     parser.add_argument("--encoder_model_name", type=str, default="allenai/longformer-base-4096",
@@ -101,7 +101,7 @@ def parsers():
                         help="Random seed.")
 
     # kg
-    parser.add_argument("--kg_path", default="./kgs/Medical_kb.spo",type=str, help="KG name or path")
+    parser.add_argument("--kg_path", default="./kgs/Medical_kb.spo",type=str, help="Path of KG .spo file")
 
     args = parser.parse_args()
     return args
