@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 import datasets
 from config import *
-from constant_bart import *
+from constant_token_id import *
 from model_saver import *
 from seed import *
 from knowledge import KnowledgeGraph
@@ -42,10 +42,8 @@ def parsers():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # Path options.
-    parser.add_argument("--pretrained_model_path", default=None, type=str,
-                        help="Path of the pretrained model.")
-    parser.add_argument("--output_model_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/roberta/", type=str,
-                        help="Path of the output model.")
+    parser.add_argument("--checkpoint_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/roberta/", type=str,
+                        help="Path of the model's checkpoint.")
     parser.add_argument("--train_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/datasets/medical_train.tsv",type=str,
                         help="Path of the trainset.")
     parser.add_argument("--dev_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/datasets/medical_val.tsv",type=str,
@@ -54,26 +52,22 @@ def parsers():
                         help="Path of the testset.")
     parser.add_argument("--log_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/logs",type=str,
                         help="Path of the testset.")
-    parser.add_argument("--last_logging", default=None,type=str,
-                        help="Path of the testset.")
-    parser.add_argument("--encoder_model_path", default=None,type=str,
-                        help="Path of the testset.")
 
     # Model options.
     parser.add_argument("--encoder_model_name", type=str, default="allenai/longformer-base-4096",
-                        help="The name of a pretrained model")
+                        help="The name of an encoder model")
     parser.add_argument("--decoder_model_name", type=str, default="gpt2",
-                        help="The name of a pretrained model")
+                        help="The name of a decoder model")
     parser.add_argument("--batch_size", type=int, default=4,
-                        help="Batch size.")
-    parser.add_argument("--seq_length_encoder", type=int, default=512,
+                        help="number of Batch size.")
+    parser.add_argument("--seq_length_encoder", type=int, default=4096,
                         help="Sequence length of encoder.")
     parser.add_argument("--seq_length_decoder", type=int, default=1024,
                         help="Sequence length of decoder.")
     parser.add_argument("--max_length", type=int, default = 256, 
-                        help= "max length.")
+                        help= "max length for text generation.")
     parser.add_argument("--min_length", type = int, default=50, 
-                        help="Min length.") 
+                        help="Min length for text generation") 
 
     parser.add_argument("--learning_rate", type=float, default=0.00003,
                         help="Learning rate.")
@@ -103,7 +97,7 @@ def parsers():
                         help="Random seed.")
 
     # kg
-    parser.add_argument("--kg_path", default="/content/k-distilroberta-gpt2/brain/kgs/Medical.spo",type=str, help="KG name or path")
+    parser.add_argument("--kg_path", default="./kgs/Medical_kb.spo",type=str, help="KG name or path")
 
     args = parser.parse_args()
     return args
@@ -117,9 +111,15 @@ class Medical_Dataset(Dataset):
         self.decoder_vocab_file = decoder_tokenizer.get_vocab()
         self.sentences = self.load_sentences()
         self.columns = self.load_columns()
+        self.answers, self.questions = self.split_answer_question()
         self.decoder_tokenizer = decoder_tokenizer
         self.encoder_tokenizer = encoder_tokenizer
         self.ij_kg = ij_kg
+        if self.ij_kg:
+            self.token_ids, self.mask, self.vms, self.decoder_ids, self.decoder_attn_mask, self.labels_ids, self.pos = self.create_dataset_inject_kg()
+        else: 
+            self.token_ids, self.mask, self.vms, self.decoder_ids, self.decoder_attn_mask, self.labels_ids, self.pos = self.create_dataset_no_inject()
+
     def load_sentences(self): 
         sentences = []
         with open(self.dataset_path, mode='r', encoding="utf-8") as f:
@@ -144,14 +144,12 @@ class Medical_Dataset(Dataset):
         return columns
 
     def split_answer_question(self): 
-        sentences = self.load_sentences(self.dataset_path)
-        columns = self.load_columns(self.dataset_path)
         answers = []
         questions = []
-        for line in sentences: 
+        for line in self.sentences: 
             line = line.strip().split('\t')
-            label = str(line[columns['answer']])
-            text = str(line[columns['question']])
+            label = str(line[self.columns['answer']])
+            text = str(line[self.columns['question']])
             answers.append(label)
             questions.append(text)
         assert len(answers) == len(questions), f"length of list of answers and questions must be equal, but got {len(answers)}, {len(questions)}"
@@ -163,18 +161,17 @@ class Medical_Dataset(Dataset):
         input decoder: <s> question_kw, KG_kw <\s> answer <s>
         """ 
 
-        answers, questions = self.split_answer_question()
-        tokens, pos, vm = self.knowledge.tokenizer_with_vm(questions,max_entities = 8, max_length = 4096)
+        tokens, pos, vm = self.knowledge.tokenizer_with_vm(self.questions,max_entities = 8, max_length = 4096)
         vms = [v.astype("bool") for v in vm]
         token_ids = [[self.encoder_vocab_file.get(t) for t in token] for token in tokens]
         mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
 
-        decoder_context = self.knowledge.get_question_with_kg_kw(questions, max_entities = 8)
-        decoder_args = decoder_tokenizer(decoder_context, answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
+        decoder_context = self.knowledge.get_question_with_kg_kw(self.questions, max_entities = 8)
+        decoder_args = decoder_tokenizer(decoder_context, self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
         decoder_ids = decoder_args.input_ids
         decoder_attn_mask = decoder_args.attention_mask
 
-        label_pr = decoder_tokenizer(answers, padding = "longest")
+        label_pr = decoder_tokenizer(self.answers, padding = "longest")
         label_ids = label_pr.input_ids
         label_attn_mask = label_pr.attention_mask
 
@@ -190,18 +187,17 @@ class Medical_Dataset(Dataset):
         input encoder: <s> question + KG 
         input decoder: <s> question <\s> answer <s>
         """
-        answers, questions = self.split_answer_question()
-        tokens, pos, vm = self.knowledge.tokenizer_with_vm(questions,max_entities = 8, max_length = 4096)
+        tokens, pos, vm = self.knowledge.tokenizer_with_vm(self.questions,max_entities = 8, max_length = 4096)
         vms = [v.astype("bool") for v in vm]
         token_ids = [[self.encoder_vocab_file.get(t) for t in token] for token in tokens]
         mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
 
-        question_kw = self.knowledge.extract_terms(questions)
-        decoder_args = decoder_tokenizer(question_kw, answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
+        question_kw = self.knowledge.extract_terms(self.questions)
+        decoder_args = decoder_tokenizer(question_kw, self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
         decoder_ids = decoder_args.input_ids
         decoder_attn_mask = decoder_args.attention_mask
 
-        label_pr = decoder_tokenizer(answers, padding = "longest")
+        label_pr = decoder_tokenizer(self.answers, padding = "longest")
         label_ids = label_pr.input_ids
         label_attn_mask = label_pr.attention_mask
 
@@ -217,18 +213,14 @@ class Medical_Dataset(Dataset):
         return len(self.sentences)
     
     def __getitem__(self, idx):
-        if self.ij_kg:
-            token_ids, mask, vms, decoder_ids, decoder_attn_mask, labels_ids, pos = self.create_dataset_inject_kg()
-        else: 
-            token_ids, mask, vms, decoder_ids, decoder_attn_mask, labels_ids, pos = self.create_dataset_no_inject()
         dataset_dict = {
-            "input_ids": torch.Tensor(token_ids[idx]), 
-            "attention_mask": torch.Tensor(mask[idx]), 
-            "visible_matrix": torch.Tensor(vms[idx]), 
-            "decoder_input_ids": torch.Tensor(decoder_ids[idx]), 
-            "decoder_attention_mask": torch.Tensor(decoder_attn_mask[idx]), 
-            "labels": torch.Tensor(labels_ids[idx]), 
-            "position_ids": torch.Tensor(pos[idx]),
+            "input_ids": torch.Tensor(self.token_ids[idx]), 
+            "attention_mask": torch.Tensor(self.mask[idx]), 
+            "visible_matrix": torch.Tensor(self.vms[idx]), 
+            "decoder_input_ids": torch.Tensor(self.decoder_ids[idx]), 
+            "decoder_attention_mask": torch.Tensor(self.decoder_attn_mask[idx]), 
+            "labels": torch.Tensor(self.labels_ids[idx]), 
+            "position_ids": torch.Tensor(self.pos[idx]),
         }
         return dataset_dict
 
@@ -249,7 +241,6 @@ def decoder_tokenizer(args, special_tokens = None):
     return tokenizer
 
 def get_model(args, decoder_tokenizer, device,special_tokens = None, load_model_path = None): 
-    print("*****************************INITIALIZING MODEL*****************************")
     encoder_config = AutoConfig.from_pretrained(args.encoder_model_name, 
                                                 output_hidden_states = True)
 
@@ -281,16 +272,18 @@ def get_model(args, decoder_tokenizer, device,special_tokens = None, load_model_
     )
     if special_tokens: 
         decoder_model.resize_token_embeddings(len(decoder_tokenizer))
-    
-    model = EncoderDecoderModel(
+
+    if load_model_path != "None":
+        print("*****************************LOADING MODEL FROM PRETRAINED*****************************")
+        # model.load_state_dict(torch.load(load_model_path)) 
+        model = EncoderDecoderModel.from_encoder_decoder_pretrained(args.checkpoint_path)
+    else:
+        print("*****************************INITIALIZING MODEL*****************************")
+        model = EncoderDecoderModel(
         config=config, 
         encoder=encoder_model, 
         decoder=decoder_model
     )
-
-    if load_model_path != "None":
-        print("*****************************LOADING MODEL FROM PRETRAINED*****************************")
-        model.load_state_dict(torch.load(load_model_path)) 
     
     model = model.to(device)
 
@@ -309,32 +302,11 @@ def main():
     # roberta_tokenizer = AutoTokenizer.from_pretrained(args.encoder_model_name)
     gpt2_tokenizer = decoder_tokenizer(args, DECODER_SPECIAL_TOKENS)
     longformer_tokenizer = LongformerTokenizer.from_pretrained("allenai/longformer-base-4096")
-    model = get_model(args, gpt2_tokenizer, device, DECODER_SPECIAL_TOKENS, args.pretrained_model_path)
+    model = get_model(args, gpt2_tokenizer, device, DECODER_SPECIAL_TOKENS, args.checkpoint_path)
     #####################################################################################################
     #KNOWLEDGE
     knowledge = KnowledgeGraph(txt_path=args.kg_path, encoder_tokenizer=longformer_tokenizer, decoder_tokenizer=gpt2_tokenizer)
-    #####################################################################################################
-    #LOADING PREVIOUS INFORMATION (IF POSSIBLE)
-    start_epoch = 1
-    last_epoch = 0
-    best_result = 9999.0
-
-    print("Best result before training: ", best_result)
-    if args.last_logging != "None": 
-        print(200*"-")
-        print("LOADING LOGGING INFORMATION FROM {}".format(args.last_logging))
-        last_logger = open(args.last_logging)
-        logger_info = json.load(last_logger)
-        last_epoch = logger_info['epoch']
-        print("Previous epoch: ", last_epoch)
-        last_loss = logger_info['total_loss']
-        print("Previous loss: ", last_loss)
-        best_result = last_loss
-        start_epoch += last_epoch
-        print("Previous best result: ", best_result)
-        print("start_epoch: {0} || last_epoch: {1}".format(start_epoch, last_epoch + args.epochs_num + 1))
-        print(200*'-')
-
+    
     #####################################################################################################
     #EVALUATION 
     rouge = datasets.load_metric("rouge")
@@ -373,7 +345,7 @@ def main():
         os.makedirs(args.log_path)
 
     training_args = TrainingArguments(
-                        output_dir=args.output_model_path,
+                        output_dir=args.checkpoint_path,
                         per_device_train_batch_size=args.batch_size,
                         per_device_eval_batch_size=args.batch_size,
                         logging_dir = args.log_path, 

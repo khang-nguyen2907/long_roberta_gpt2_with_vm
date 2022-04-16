@@ -21,7 +21,7 @@ from tqdm import tqdm
 import datasets
 from datasets import Dataset
 from config import *
-from constant_bart import *
+from constant_token_id import *
 from model_saver import *
 from seed import *
 from knowledge import KnowledgeGraph
@@ -469,16 +469,9 @@ def main():
     # roberta_tokenizer = AutoTokenizer.from_pretrained(args.encoder_model_name)
     gpt2_tokenizer = decoder_tokenizer(args, DECODER_SPECIAL_TOKENS)
     model, roberta_tokenizer = get_long_roberta_model(args)
-<<<<<<< HEAD
 
     knowledge = KnowledgeGraph(txt_path=args.kg_path, encoder_tokenizer=roberta_tokenizer, decoder_tokenizer=gpt2_tokenizer)
 
-=======
-    
-    start_epoch = 1
-    last_epoch = 0
-    best_result = 9999.0
->>>>>>> df880111c941857625cfe4f6a35a2e10581f7bd9
     print("Best result before training: ", best_result)
     if args.last_logging != "None": 
         print(200*"-")
