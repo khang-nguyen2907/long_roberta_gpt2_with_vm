@@ -70,6 +70,8 @@ def parsers():
                         help= "max length for text generation.")
     parser.add_argument("--min_length", type = int, default=50, 
                         help="Min length for text generation") 
+    parser.add_argument("--decoder_with_kg_info", type = bool, default=True, 
+                        help="Determine that input of decoder (context part) contains KG info or not")
 
     parser.add_argument("--learning_rate", type=float, default=0.00003,
                         help="Learning rate.")
@@ -105,7 +107,7 @@ def parsers():
     return args
 
 class Medical_Dataset(Dataset): 
-    def __init__(self, dataset_path, knowledge,encoder_tokenizer, decoder_tokenizer,args, ij_kg = False): 
+    def __init__(self, dataset_path, knowledge,encoder_tokenizer, decoder_tokenizer,args): 
         self.args = args
         self.dataset_path = dataset_path
         self.knowledge = knowledge
@@ -116,7 +118,7 @@ class Medical_Dataset(Dataset):
         self.answers, self.questions = self.split_answer_question()
         self.decoder_tokenizer = decoder_tokenizer
         self.encoder_tokenizer = encoder_tokenizer
-        self.ij_kg = ij_kg
+        self.ij_kg = self.args.decoder_with_kg_info
         if self.ij_kg:
             self.token_ids, self.mask, self.vms, self.decoder_ids, self.decoder_attn_mask, self.labels_ids, self.pos = self.create_dataset_inject_kg()
         else: 
@@ -168,7 +170,7 @@ class Medical_Dataset(Dataset):
         token_ids = [[self.encoder_vocab_file.get(t) for t in token] for token in tokens]
         mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
 
-        decoder_context = self.knowledge.get_question_with_kg_kw(self.questions, max_entities = 8)
+        decoder_context = self.knowledge.get_question_with_kg_kw(self.questions, max_entities = self.args.max_entities)
         decoder_args = decoder_tokenizer(decoder_context, self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
         decoder_ids = decoder_args.input_ids
         decoder_attn_mask = decoder_args.attention_mask
@@ -338,8 +340,8 @@ def main():
 
     #####################################################################################################
     #Train & Eval Dataset
-    train_dataset = Medical_Dataset(args.train_path, knowledge=knowledge, encoder_tokenizer=longformer_tokenizer, decoder_tokenizer=gpt2_tokenizer, args=args, ij_kg = True)
-    val_dataset = Medical_Dataset(args.dev_path, knowledge=knowledge, encoder_tokenizer=longformer_tokenizer, decoder_tokenizer=gpt2_tokenizer, args=args, ij_kg = True)
+    train_dataset = Medical_Dataset(args.train_path, knowledge=knowledge, encoder_tokenizer=longformer_tokenizer, decoder_tokenizer=gpt2_tokenizer, args=args)
+    val_dataset = Medical_Dataset(args.dev_path, knowledge=knowledge, encoder_tokenizer=longformer_tokenizer, decoder_tokenizer=gpt2_tokenizer, args=args)
 
     #####################################################################################################
     #TRAINING PHASE 
