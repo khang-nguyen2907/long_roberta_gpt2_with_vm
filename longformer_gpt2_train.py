@@ -60,6 +60,8 @@ def parsers():
                         help="The name of a decoder model")
     parser.add_argument("--batch_size", type=int, default=4,
                         help="number of Batch size.")
+    parser.add_argument("--max_entities", type=int, default=8,
+                        help="max number of entities queried from KG")
     parser.add_argument("--seq_length_encoder", type=int, default=4096,
                         help="Sequence length of encoder.")
     parser.add_argument("--seq_length_decoder", type=int, default=1024,
@@ -161,7 +163,7 @@ class Medical_Dataset(Dataset):
         input decoder: <s> question_kw, KG_kw <\s> answer <s>
         """ 
 
-        tokens, pos, vm = self.knowledge.tokenizer_with_vm(self.questions,max_entities = 8, max_length = 4096)
+        tokens, pos, vm = self.knowledge.tokenizer_with_vm(self.questions,max_entities = self.args.max_entities, max_length = self.args.seq_length_encoder)
         vms = [v.astype("bool") for v in vm]
         token_ids = [[self.encoder_vocab_file.get(t) for t in token] for token in tokens]
         mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
@@ -187,7 +189,7 @@ class Medical_Dataset(Dataset):
         input encoder: <s> question + KG 
         input decoder: <s> question <\s> answer <s>
         """
-        tokens, pos, vm = self.knowledge.tokenizer_with_vm(self.questions,max_entities = 8, max_length = 4096)
+        tokens, pos, vm = self.knowledge.tokenizer_with_vm(self.questions,max_entities = self.args.max_entities, max_length = self.args.seq_length_encoder)
         vms = [v.astype("bool") for v in vm]
         token_ids = [[self.encoder_vocab_file.get(t) for t in token] for token in tokens]
         mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
