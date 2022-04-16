@@ -26,11 +26,12 @@ from knowledge import KnowledgeGraph
 
 from model.modeling_longformer import * 
 from model.modeling_roberta import *
+from model.modeling_encoder_decoder import *
 
-from transformers import GPT2Tokenizer, AutoConfig, EncoderDecoderConfig, GPT2LMHeadModel, EncoderDecoderModel, LongformerTokenizer
+from transformers import GPT2Tokenizer, AutoConfig, EncoderDecoderConfig, GPT2LMHeadModel, LongformerTokenizer
 from transformers import AdamW, get_scheduler
 from transformers import TrainingArguments, Trainer
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 DECODER_SPECIAL_TOKENS  = {"bos_token": "<s>",
                    "eos_token": "</s>",
                    "unk_token": "<unk>",                    
@@ -115,15 +116,21 @@ class Medical_Dataset(Dataset):
         self.encoder_vocab_file = encoder_tokenizer.get_vocab()
         self.decoder_vocab_file = decoder_tokenizer.get_vocab()
         self.sentences = self.load_sentences()
+        print(">>>Loaded all sentences from {0}".format(dataset_path))
         self.columns = self.load_columns()
         self.answers, self.questions = self.split_answer_question()
+        print(">>>Splitting sentences to answers and questions is completed.")
         self.decoder_tokenizer = decoder_tokenizer
         self.encoder_tokenizer = encoder_tokenizer
         self.ij_kg = self.args.decoder_with_kg_info
         if self.ij_kg:
+            print(">>>Context is question keywords and KG information")
             self.token_ids, self.mask, self.vms, self.decoder_ids, self.decoder_attn_mask, self.labels_ids, self.pos = self.create_dataset_inject_kg()
+            print(">>>All inputs for model are ready.")
         else: 
+            print(">>>Context is just question keywords")
             self.token_ids, self.mask, self.vms, self.decoder_ids, self.decoder_attn_mask, self.labels_ids, self.pos = self.create_dataset_no_inject()
+            print(">>>All inputs for model are ready.")
 
     def load_sentences(self): 
         sentences = []
@@ -172,11 +179,11 @@ class Medical_Dataset(Dataset):
         mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
 
         decoder_context = self.knowledge.get_question_with_kg_kw(self.questions, max_entities = self.args.max_entities)
-        decoder_args = decoder_tokenizer(decoder_context, self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
+        decoder_args = self.decoder_tokenizer(decoder_context, self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
         decoder_ids = decoder_args.input_ids
         decoder_attn_mask = decoder_args.attention_mask
 
-        label_pr = decoder_tokenizer(self.answers, padding = "longest")
+        label_pr = self.decoder_tokenizer(self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
         label_ids = label_pr.input_ids
         label_attn_mask = label_pr.attention_mask
 
@@ -198,11 +205,11 @@ class Medical_Dataset(Dataset):
         mask = [[1 if t != PAD_TOKEN else 0 for t in token] for token in tokens]
 
         question_kw = self.knowledge.extract_terms(self.questions)
-        decoder_args = decoder_tokenizer(question_kw, self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
+        decoder_args = self.decoder_tokenizer(question_kw, self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
         decoder_ids = decoder_args.input_ids
         decoder_attn_mask = decoder_args.attention_mask
 
-        label_pr = decoder_tokenizer(self.answers, padding = "longest")
+        label_pr = self.decoder_tokenizer(self.answers, padding = "max_length", truncation = True, max_length = self.args.seq_length_decoder)
         label_ids = label_pr.input_ids
         label_attn_mask = label_pr.attention_mask
 
@@ -219,13 +226,13 @@ class Medical_Dataset(Dataset):
     
     def __getitem__(self, idx):
         dataset_dict = {
-            "input_ids": torch.Tensor(self.token_ids[idx]), 
-            "attention_mask": torch.Tensor(self.mask[idx]), 
-            "visible_matrix": torch.Tensor(self.vms[idx]), 
-            "decoder_input_ids": torch.Tensor(self.decoder_ids[idx]), 
-            "decoder_attention_mask": torch.Tensor(self.decoder_attn_mask[idx]), 
-            "labels": torch.Tensor(self.labels_ids[idx]), 
-            "position_ids": torch.Tensor(self.pos[idx]),
+            "input_ids": torch.LongTensor(self.token_ids[idx]), 
+            "attention_mask": torch.LongTensor(self.mask[idx]), 
+            "visible_matrix": torch.LongTensor(self.vms[idx]), 
+            "decoder_input_ids": torch.LongTensor(self.decoder_ids[idx]), 
+            "decoder_attention_mask": torch.LongTensor(self.decoder_attn_mask[idx]), 
+            "labels": torch.LongTensor(self.labels_ids[idx]), 
+            "position_ids": torch.LongTensor(self.pos[idx]),
         }
         return dataset_dict
 
@@ -257,16 +264,6 @@ def get_model(args, decoder_tokenizer, device,special_tokens = None, load_model_
                                                 add_cross_attention = True, 
                                                 use_cache = False)
 
-    config = EncoderDecoderConfig.from_encoder_decoder_configs(encoder_config=encoder_config, decoder_config=decoder_config)
-    config.decoder_start_token_id = decoder_tokenizer.bos_token_id
-    config.eos_token_id = decoder_tokenizer.eos_token_id
-    config.max_length = args.max_length
-    config.min_length = args.min_length
-    config.no_repeat_ngram_size = 3
-    config.early_stopping = True
-    config.length_penalty = 2.0
-    config.num_beams = 4
-
     encoder_model = LongformerModel.from_pretrained(
         args.encoder_model_name, 
         config = encoder_config
@@ -277,6 +274,16 @@ def get_model(args, decoder_tokenizer, device,special_tokens = None, load_model_
     )
     if special_tokens: 
         decoder_model.resize_token_embeddings(len(decoder_tokenizer))
+    
+    config = EncoderDecoderConfig.from_encoder_decoder_configs(encoder_config=encoder_model.config, decoder_config=decoder_model.config)
+    config.decoder_start_token_id = decoder_tokenizer.bos_token_id
+    config.eos_token_id = decoder_tokenizer.eos_token_id
+    config.max_length = args.max_length
+    config.min_length = args.min_length
+    config.no_repeat_ngram_size = 3
+    config.early_stopping = True
+    config.length_penalty = 2.0
+    config.num_beams = 4
 
     if not args.train_from_scratch:
         print("*****************************LOADING MODEL FROM PRETRAINED*****************************")
@@ -296,7 +303,6 @@ def get_model(args, decoder_tokenizer, device,special_tokens = None, load_model_
 
 
 def main():
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     #####################################################################################################
     #ARGS
     args = parsers()
@@ -342,7 +348,9 @@ def main():
 
     #####################################################################################################
     #Train & Eval Dataset
+    print("*****************************LOADING TRAIN DATASET*****************************")
     train_dataset = Medical_Dataset(args.train_path, knowledge=knowledge, encoder_tokenizer=longformer_tokenizer, decoder_tokenizer=gpt2_tokenizer, args=args)
+    print("*****************************LOADING VAL DATASET*****************************")
     val_dataset = Medical_Dataset(args.dev_path, knowledge=knowledge, encoder_tokenizer=longformer_tokenizer, decoder_tokenizer=gpt2_tokenizer, args=args)
 
     #####################################################################################################
@@ -357,8 +365,6 @@ def main():
                         per_device_eval_batch_size=args.batch_size,
                         logging_dir = args.log_path, 
                         num_train_epochs=args.epochs_num,
-                        predict_from_generate=True,
-                        evaluate_during_training=True,
                         do_train=True,
                         do_eval=True,
                         evaluation_strategy = "epoch",
@@ -371,7 +377,7 @@ def main():
                         learning_rate=args.learning_rate,
                         weight_decay = args.weight_decay, 
                         adam_epsilon = args.adam_epsilon, 
-                        max_steps = args.max_steps, 
+                        # max_steps = args.max_steps, 
                         max_grad_norm = args.max_grad_norm, 
                         fp16=True,
                     )
