@@ -41,6 +41,8 @@ def parsers():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # Path options.
+    parser.add_argument("--train_from_scratch", default=True, type=bool,
+                        help="Path of the model's checkpoint.")
     parser.add_argument("--checkpoint_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/roberta/", type=str,
                         help="Path of the model's checkpoint.")
     parser.add_argument("--train_path", default="/home/dctuyen/K-BART/k-distilroberta-gpt2/datasets/medical_train.tsv",type=str,
@@ -276,7 +278,7 @@ def get_model(args, decoder_tokenizer, device,special_tokens = None, load_model_
     if special_tokens: 
         decoder_model.resize_token_embeddings(len(decoder_tokenizer))
 
-    if load_model_path != "None":
+    if not args.train_from_scratch:
         print("*****************************LOADING MODEL FROM PRETRAINED*****************************")
         # model.load_state_dict(torch.load(load_model_path)) 
         model = EncoderDecoderModel.from_encoder_decoder_pretrained(args.checkpoint_path)

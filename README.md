@@ -24,7 +24,7 @@ About other datasets such as ```*_half```, ```*_mini``` smaller than the main da
 ## Train 
 Notebook for training model is available: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1nfKWmo99D46KOqQ41xRH8rfm_ewvfYdo?usp=sharing)
 
-We recommend you to use Colab pro with  GPU P100 x1 and high RAM (25gb RAM) 
+We recommend you to use Colab pro with 1x GPU P100 and high RAM (25gb RAM) 
 
 If not using note book, run: 
 
