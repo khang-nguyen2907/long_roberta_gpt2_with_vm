@@ -31,7 +31,6 @@ from transformers import GPT2Tokenizer, AutoConfig, EncoderDecoderConfig, GPT2LM
 from transformers import AdamW, get_scheduler
 from transformers import TrainingArguments, Trainer
 
-
 DECODER_SPECIAL_TOKENS  = {"bos_token": "<s>",
                    "eos_token": "</s>",
                    "unk_token": "<unk>",                    
@@ -295,6 +294,7 @@ def get_model(args, decoder_tokenizer, device,special_tokens = None, load_model_
 
 
 def main():
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     #####################################################################################################
     #ARGS
     args = parsers()
@@ -345,6 +345,7 @@ def main():
 
     #####################################################################################################
     #TRAINING PHASE 
+
     if not os.path.exists(args.log_path):
         os.makedirs(args.log_path)
 
